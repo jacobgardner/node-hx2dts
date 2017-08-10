@@ -11,6 +11,10 @@ var DTSDumper = function(input) {
     this.output = null;
     this.input = input;
     this.indent = 0;
+    this.typesUsed = {
+        'Array': 0,
+        'Array<number>': 0,
+    };
 };
 
 
@@ -23,12 +27,44 @@ DTSDumper.prototype.getOutput = function() {
     return this.output;
 };
 
+const path = require('path');
 
 DTSDumper.prototype.dumpFromInput = function() {
     this.computeTypeReplacements();
 
+    console.log(this.input);
+
+    const currentPath = this.input.package.replace(/\./g, '/');
+
+    const processDependency = (dependency) => {
+        dependency = dependency.replace(/<.*>/, '');
+        var lastDot = dependency.lastIndexOf('.');
+
+
+        if (lastDot === 1) {
+            console.log('DEPENDENCY: ', dependency);
+            return;
+        }
+
+        const name = dependency.substring(lastDot+1);
+
+        if (this.typesUsed[name] === 0) {
+            return;
+        }
+
+        const newPath = dependency.replace(/\./g, '/');    
+
+        const importPath = newPath.search('/') === -1 ? './' + newPath : path.relative(currentPath, newPath);
+        // console.log(currentPath, newPath);
+
+        this.output = `import { ${name} } from '${importPath}';\n` + this.output;
+        this.typesUsed[name] = 0;
+    }    
+
+    this.input.dependencies.forEach(processDependency);
+
     if (this.input.package != null) {
-        this.writeIndentedLine('declare module ' + this.input.package + ' {');
+        // this.writeIndentedLine('declare module ' + this.input.package + ' {');
         this.writeLineBreak();
         this.indent++;
     }
@@ -53,7 +89,7 @@ DTSDumper.prototype.dumpFromInput = function() {
     if (hasMoreElements) {
         // Dump other elements
         //
-        this.writeIndentedLine('module ' + this.input.moduleName + ' {');
+        // this.writeIndentedLine('module ' + this.input.moduleName + ' {');
         this.writeLineBreak();
         this.indent++;
 
@@ -64,14 +100,22 @@ DTSDumper.prototype.dumpFromInput = function() {
         });
 
         this.indent--;
-        this.writeIndentedLine('}');
+        // this.writeIndentedLine('}');
         this.writeLineBreak();
     }
 
     if (this.input.package != null) {
         this.indent--;
-        this.writeIndentedLine('}');
+        // this.writeIndentedLine('}');
         this.writeLineBreak();
+    }
+
+    for (let key in this.typesUsed) {
+        if (this.typesUsed[key]) {
+            processDependency(key);
+            // key = key.replace(/<.*>/, '');
+            // this.output = `import { ${key} } from './${key}';\n` + this.output;
+        }
     }
 };
 
@@ -81,8 +125,8 @@ DTSDumper.prototype.computeTypeReplacements = function() {
 
     // Default replacements
     this.typeReplacements['String'] = 'string';
-    this.typeReplacements['Int'] = 'integer';
-    this.typeReplacements['UInt'] = 'integer';
+    this.typeReplacements['Int'] = 'number';
+    this.typeReplacements['UInt'] = 'number';
     this.typeReplacements['Float'] = 'number';
     this.typeReplacements['Bool'] = 'boolean';
     this.typeReplacements['Array<Dynamic>'] = 'Array<any>';
@@ -92,10 +136,10 @@ DTSDumper.prototype.computeTypeReplacements = function() {
     // Imported replacements
     var _this = this;
     this.input.dependencies.forEach(function(dependency) {
-        var lastDot = dependency.lastIndexOf('.');
-        if (lastDot != -1) {
-            _this.typeReplacements[dependency.substring(lastDot+1)] = dependency;
-        }
+        // var lastDot = dependency.lastIndexOf('.');
+        // if (lastDot != -1) {
+        //     _this.typeReplacements[dependency.substring(lastDot+1)] = dependency;
+        // }
     });
 };
 
@@ -123,10 +167,13 @@ DTSDumper.prototype.dumpEntry = function(entry) {
         }
 
         if (entry.propertyName != null) {
+            console.log(this.getComposedIdentifierName(entry.propertyName), this.getType(entry.propertyType));
             this.writeIndentedLine((entry.isStatic ? 'static ' : '') + this.getComposedIdentifierName(entry.propertyName) + ': ' + this.getType(entry.propertyType) + ';');
             this.writeLineBreak();
         }
         else if (entry.methodName != null) {
+            console.log('METHOD NAME:', entry.methodName);
+            console.log(entry);
             if (entry.methodName == 'new') {
                 this.writeIndentedLine((entry.isStatic ? 'static ' : '') + 'constructor(' + this.getArguments(entry.arguments) + ');');
             } else {
@@ -135,7 +182,9 @@ DTSDumper.prototype.dumpEntry = function(entry) {
             this.writeLineBreak();
         }
         else if (entry.className != null) {
-            this.writeIndentedLine('export class ' + this.getComposedIdentifierName(entry.className) + this.getHeritageClauses(entry) + ' {');
+            const className = this.getComposedIdentifierName(entry.className);
+            this.writeIndentedLine('export class ' + className + this.getHeritageClauses(entry) + ' {');
+            this.typesUsed[className] = 0;
             this.writeLineBreak();
             this.indent++;
 
@@ -148,9 +197,12 @@ DTSDumper.prototype.dumpEntry = function(entry) {
             this.writeLineBreak();
         }
         else if (entry.interfaceName != null) {
-            this.writeIndentedLine('export interface ' + this.getComposedIdentifierName(entry.interfaceName) + this.getHeritageClauses(entry) + ' {');
+            const interfaceName = this.getComposedIdentifierName(entry.interfaceName);
+            this.writeIndentedLine('export interface ' + interfaceName + this.getHeritageClauses(entry) + ' {');
             this.writeLineBreak();
             this.indent++;
+
+            this.typesUsed[interfaceName] = 0;
 
             entry.entries.forEach(function (entry) {
                 _this.dumpEntry(entry);
@@ -179,12 +231,14 @@ DTSDumper.prototype.dumpEntry = function(entry) {
             }
         }
         else if (entry.enumName != null) {
+            console.log('ENTRY: ', entry.enumName);
             this.writeIndentedLine('export enum ' + this.getComposedIdentifierName(entry.enumName) + ' {');
             this.writeLineBreak();
             this.indent++;
 
             var lastI = 0;
             var hasEntriesWithArguments = false;
+
             entry.enumValues.forEach(function(value, i) {
                 if (value.valueArguments == null) {
                     lastI = i;
@@ -192,6 +246,8 @@ DTSDumper.prototype.dumpEntry = function(entry) {
                     hasEntriesWithArguments = true;
                 }
             });
+
+            // console.log(entry.enumValues);
             entry.enumValues.forEach(function(value, i) {
                 if (value.valueArguments == null) {
                     _this.writeIndentedLine(value.valueName+(i < lastI ? ',' : ''));
@@ -204,7 +260,7 @@ DTSDumper.prototype.dumpEntry = function(entry) {
             this.writeLineBreak();
 
             if (hasEntriesWithArguments) {
-                this.writeIndentedLine('declare module ' + this.getComposedIdentifierName(entry.enumName) + ' {');
+                // this.writeIndentedLine('declare module ' + this.getComposedIdentifierName(entry.enumName) + ' {');
                 this.writeLineBreak();
                 this.indent++;
 
@@ -215,7 +271,7 @@ DTSDumper.prototype.dumpEntry = function(entry) {
                 });
 
                 this.indent--;
-                this.writeIndentedLine('}');
+                // this.writeIndentedLine('}');
                 this.writeLineBreak();
             }
         }
@@ -224,7 +280,12 @@ DTSDumper.prototype.dumpEntry = function(entry) {
 
 
 DTSDumper.prototype.getComposedIdentifierName = function(input) {
-    if (input.indexOf('<') != -1) {
+    const paren = input.indexOf('(');
+    if (paren !== -1) {
+        input = input.substring(0, paren);
+    }
+
+    if (input.indexOf('<') !== -1) {
         var _this = this;
         input = input.replace(/<(.*)>/, function(match, contents, offset, s) {
             return '<' + _this.getType(contents) + '>';
@@ -324,6 +385,16 @@ DTSDumper.prototype.getType = function(rawType) {
     if (result.indexOf('->') != -1) {
         result = this.convertCallbacks(result);
     }
+
+    if (this.typesUsed[result] === undefined) {
+        this.typesUsed[result] = 1;
+    }
+
+    // // console.log(result);
+    // const lastDot = result.lastIndexOf('.');
+    // console.log(result);
+
+    // return result.substring(lastDot);
 
     return result;
 };
